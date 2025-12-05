@@ -1,7 +1,7 @@
 "use client"
 import React, { useState, useEffect } from "react"
 import axios from "axios"
-import { useParams } from "next/navigation"
+import { useParams, useRouter } from "next/navigation"
 import Container from "@/components/common/Container"
 import {
   Heart,
@@ -13,8 +13,10 @@ import {
   Plus,
   Minus,
 } from "lucide-react"
+import { useSelector } from "react-redux"
 
 const Page = () => {
+  const router = useRouter()
   const { slug } = useParams()
   const [product, setProduct] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -22,6 +24,8 @@ const Page = () => {
   const [quantity, setQuantity] = useState(1)
   const [selectedSize, setSelectedSize] = useState("")
   const [selectedColor, setSelectedColor] = useState("")
+
+  const user = useSelector((state) => state.user?.value)
 
   useEffect(() => {
     setLoading(true)
@@ -39,11 +43,11 @@ const Page = () => {
       })
   }, [slug])
 
-  // Derive images
+  // images
   const images = product?.images || product?.image || ["/placeholder.jpg"]
   const imagesArray = Array.isArray(images) ? images : [images]
 
-  // Derive sizes/colors: prefer explicit arrays; otherwise derive from variants
+  // variants -> derive sizes/colors
   const variantList = Array.isArray(product?.variants) ? product.variants : []
   const sizesFromVariants = Array.from(new Set(variantList.map((v) => v.size).filter(Boolean)))
   const colorsFromVariants = Array.from(new Set(variantList.map((v) => v.color).filter(Boolean)))
@@ -51,27 +55,16 @@ const Page = () => {
   const sizes = Array.isArray(product?.sizes) && product.sizes.length > 0 ? product.sizes : sizesFromVariants
   const colors = Array.isArray(product?.colors) && product.colors.length > 0 ? product.colors : colorsFromVariants
 
-  // After product loads, preselect sensible defaults if not already selected
   useEffect(() => {
     if (!product) return
-
-    // prefer explicit fields but fallback to derived lists
-    if (!selectedSize && sizes.length > 0) {
-      setSelectedSize(sizes[0])
-    }
-    if (!selectedColor && colors.length > 0) {
-      setSelectedColor(colors[0])
-    }
-
-    // reset image index
+    if (!selectedSize && sizes.length > 0) setSelectedSize(sizes[0])
+    if (!selectedColor && colors.length > 0) setSelectedColor(colors[0])
     setSelectedImage(0)
     setQuantity(1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [product]) // intentionally only when product changes
+  }, [product])
 
-  // Find selectedVariant with flexible matching:
-  // If both size and color exist in data, match both.
-  // If only color exists, match by color. If only size exists, match by size.
+  // find variant (flexible matching)
   const selectedVariant =
     variantList.find((v) => {
       const sizeExists = sizesFromVariants.length > 0 || (Array.isArray(product?.sizes) && product.sizes.length > 0)
@@ -83,15 +76,28 @@ const Page = () => {
       return sizeMatches && colorMatches
     }) ?? null
 
-  // availableStock: if multi-variant use matched variant stock else product.stock / totalStock
   const availableStock =
     product?.variantType === "MultiVarient"
       ? selectedVariant?.stock ?? 0
       : product?.stock ?? product?.totalStock ?? 0
 
-  const handleAddToCart = () => {
+  const getUserId = () => {
+    return user?.id || user?._id || null
+  }
+
+  const handleAddToCart = async () => {
+    const userId = getUserId()
+    if (!userId) {
+      alert("Please login to add items to cart.")
+      router.push("/login")
+      return
+    }
+
+   
+
+    // MULTI-VARIANT PRODUCT
     if (product?.variantType === "MultiVarient") {
-      // If sizes exist in UI, ensure selection
+      // only require selections that actually exist
       if (sizes.length > 0 && !selectedSize) {
         alert("Please select a size")
         return
@@ -111,26 +117,67 @@ const Page = () => {
         return
       }
 
-      console.log("Add to cart:", {
-        product,
-        variant: selectedVariant,
+      // prepare payload: prefer variant._id, otherwise send identifying fields
+      const variantPayload = selectedVariant._id
+        ? { variantId: selectedVariant._id }
+        : {
+            size: selectedVariant.size ?? selectedSize ?? null,
+            color: selectedVariant.color ?? selectedColor ?? null,
+          }
+
+      const payload = {
+        user: userId,
+        product: product._id,
         quantity,
-        selectedSize,
-        selectedColor,
-      })
-    } else {
-      if (availableStock < quantity) {
-        alert(`Only ${availableStock} items available`)
-        return
+        variants: selectedVariant._id,
       }
-      console.log("Add to cart:", { product, quantity })
+
+      try {
+        const res = await axios.post(`${process.env.NEXT_PUBLIC_API}/cart/addtocart`, payload)
+        if (res?.status === 200 || res?.status === 201) {
+          alert("Item added to cart successfully!")
+        } else {
+          console.warn("Add to cart response:", res)
+          alert("Failed to add item to cart.")
+        }
+      } catch (err) {
+        console.error("Add to cart error (multi):", err)
+        const backendMessage = err?.response?.data?.error || err?.response?.data?.message || null
+        alert(backendMessage ? `Failed: ${backendMessage}` : "Failed to add item to cart.")
+      }
+
+      return
     }
-    // TODO: add your cart logic here
+
+    // SINGLE VARIANT / SIMPLE PRODUCT
+    // do not include variant field here (backend expects only product and user)
+    if (availableStock < quantity) {
+      alert(`Only ${availableStock} items available`)
+      return
+    }
+
+    try {
+      const payload = {
+        user: userId,
+        product: product._id,
+        quantity,
+      }
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API}/cart/addtocart`, payload)
+      if (res?.status === 200 || res?.status === 201) {
+        alert("Item added to cart successfully!")
+      } else {
+        console.warn("Add to cart response (single):", res)
+        alert("Failed to add item to cart.")
+      }
+    } catch (err) {
+      console.error("Add to cart error (single):", err)
+      const backendMessage = err?.response?.data?.error || err?.response?.data?.message || null
+      alert(backendMessage ? `Failed: ${backendMessage}` : "Failed to add item to cart.")
+    }
   }
 
   const handleAddToWishlist = () => {
     console.log("Add to wishlist:", product)
-    // TODO: wishlist logic
   }
 
   const incrementQuantity = () => {
@@ -177,13 +224,11 @@ const Page = () => {
       <Container>
         <div className="bg-white rounded-2xl shadow-lg p-6 lg:p-8">
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-12">
-            {/* Left Column - Images */}
+            {/* Left */}
             <div className="space-y-4">
               <div className="relative overflow-hidden rounded-xl bg-gray-100 aspect-square">
                 <img src={imagesArray[selectedImage]} alt={product?.title || product?.name} className="w-full h-full object-cover" />
-                {product?.discount && (
-                  <div className="absolute top-4 left-4 bg-red-500 text-white text-sm font-bold px-4 py-2 rounded-full">-{product.discount}% OFF</div>
-                )}
+                {product?.discount && <div className="absolute top-4 left-4 bg-red-500 text-white text-sm font-bold px-4 py-2 rounded-full">-{product.discount}% OFF</div>}
               </div>
 
               {imagesArray.length > 1 && (
@@ -197,7 +242,7 @@ const Page = () => {
               )}
             </div>
 
-            {/* Right Column */}
+            {/* Right */}
             <div className="space-y-6">
               <div>
                 <h1 className="text-3xl lg:text-4xl font-bold text-gray-900 mb-3">{product?.title || product?.name}</h1>
@@ -205,9 +250,7 @@ const Page = () => {
                 <div className="flex items-center gap-3 mb-4">
                   <div className="flex items-center gap-1">
                     <div className="flex text-yellow-400 text-lg">
-                      {[...Array(5)].map((_, i) => (
-                        <Star key={i} className={`w-5 h-5 ${i < Math.floor(product?.rating || 4) ? "fill-yellow-400" : "fill-gray-300"}`} />
-                      ))}
+                      {[...Array(5)].map((_, i) => <Star key={i} className={`w-5 h-5 ${i < Math.floor(product?.rating || 4) ? "fill-yellow-400" : "fill-gray-300"}`} />)}
                     </div>
                     <span className="text-sm text-gray-600 ml-2">{product?.rating || 4.5} ({product?.reviews || 128} reviews)</span>
                   </div>
@@ -230,13 +273,13 @@ const Page = () => {
                 <p className="text-gray-600 leading-relaxed">{product?.description || "High-quality product..."}</p>
               </div>
 
-              {/* Size selection only if sizes exist */}
+              {/* Size */}
               {product?.variantType === "MultiVarient" && sizes.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">Select Size <span className="text-red-500">*</span></h3>
                   <div className="flex flex-wrap gap-2">
                     {sizes.map((size) => {
-                      const sizeHasStock = variantList.some((v) => (v.size === size) && (v.stock > 0))
+                      const sizeHasStock = variantList.some((v) => v.size === size && v.stock > 0)
                       return (
                         <button key={size} onClick={() => { setSelectedSize(size); setQuantity(1) }} disabled={!sizeHasStock}
                           className={`px-6 py-2 rounded-lg border-2 font-medium transition-all ${selectedSize === size ? "border-blue-600 bg-blue-50 text-blue-600" : sizeHasStock ? "border-gray-300 hover:border-gray-400 text-gray-700" : "border-gray-200 text-gray-400 cursor-not-allowed opacity-50"}`}>
@@ -248,13 +291,13 @@ const Page = () => {
                 </div>
               )}
 
-              {/* Color selection only if colors exist */}
+              {/* Color */}
               {product?.variantType === "MultiVarient" && colors.length > 0 && (
                 <div>
                   <h3 className="text-sm font-semibold text-gray-900 mb-3">Select Color <span className="text-red-500">*</span></h3>
                   <div className="flex flex-wrap gap-2">
                     {colors.map((color) => {
-                      const colorHasStock = variantList.some((v) => (v.color === color) && (v.stock > 0) && (!selectedSize || v.size === selectedSize))
+                      const colorHasStock = variantList.some((v) => v.color === color && v.stock > 0 && (!selectedSize || v.size === selectedSize))
                       return (
                         <button key={color} onClick={() => { setSelectedColor(color); setQuantity(1) }} disabled={!colorHasStock}
                           className={`px-6 py-2 rounded-lg border-2 font-medium transition-all ${selectedColor === color ? "border-blue-600 bg-blue-50 text-blue-600" : colorHasStock ? "border-gray-300 hover:border-gray-400 text-gray-700" : "border-gray-200 text-gray-400 cursor-not-allowed opacity-50"}`}>
@@ -289,23 +332,18 @@ const Page = () => {
                 </button>
               </div>
 
-           {
-  product?.variantType === "MultiVarient" && (
-    // Only show the warning if a selection is missing for an option that actually exists
-    ((sizes.length > 0 && !selectedSize) || (colors.length > 0 && !selectedColor)) && (
-      <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
-        <p className="text-sm text-yellow-800">
-          Please select{" "}
-          {sizes.length > 0 && !selectedSize && "size"}
-          {sizes.length > 0 && !selectedSize && colors.length > 0 && !selectedColor && " and "}
-          {colors.length > 0 && !selectedColor && "color"}
-          {" "}before adding to cart
-        </p>
-      </div>
-    )
-  )
-}
-
+              {/* Variant warning */}
+              {product?.variantType === "MultiVarient" && ((sizes.length > 0 && !selectedSize) || (colors.length > 0 && !selectedColor)) && (
+                <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                  <p className="text-sm text-yellow-800">
+                    Please select{" "}
+                    {sizes.length > 0 && !selectedSize && "size"}
+                    {sizes.length > 0 && !selectedSize && colors.length > 0 && !selectedColor && " and "}
+                    {colors.length > 0 && !selectedColor && "color"}
+                    {" "}before adding to cart
+                  </p>
+                </div>
+              )}
 
               {/* Features */}
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-6 border-t border-gray-200">
